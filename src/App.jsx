@@ -13,32 +13,43 @@ let _apiKey = "";
 const setApiKey = (k) => { _apiKey = k; };
 const getApiKey = () => _apiKey;
 
-async function callClaude({ system, messages, tools, maxTokens = 1500 }) {
+async function callClaude({ system, messages, maxTokens = 1500 }) {
+  // ⚠️ 已經幫你移除咗 AI 幻想出嚟嘅 tools 參數
   const key = getApiKey();
   if (!key) throw new Error("請先輸入 Anthropic API Key");
-  const body = { model: "claude-sonnet-4-20250514", max_tokens: maxTokens, system, messages };
-  if (tools) body.tools = tools;
-  for (let i = 0; i < 5; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, Math.min(3000 * Math.pow(2, i) + Math.random() * 2000, 40000)));
-    try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": key,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify(body),
-      });
-      if (resp.status === 429) { await new Promise(r => setTimeout(r, 8000 * Math.pow(2, i))); continue; }
-      if (resp.status === 401) throw new Error("API Key 無效，請檢查後重試");
-      if (resp.status >= 500) continue;
-      if (!resp.ok) throw new Error(`API ${resp.status}`);
-      return resp.json();
-    } catch (e) { if (i === 4) throw e; if (e.message?.includes("API Key") || e.message?.includes("請先")) throw e; }
+
+  // 1. 修正為真實存在嘅最新模型名稱
+  const body = { 
+    model: "claude-3-5-sonnet-latest", 
+    max_tokens: maxTokens, 
+    system, 
+    messages 
+  };
+
+  try {
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (resp.status === 401) throw new Error("API Key 無效，請確保冇 copy 多咗空格！");
+    
+    // 2. 如果有錯，即刻彈出，唔好再等 80 秒！
+    if (!resp.ok) {
+      const errData = await resp.json();
+      throw new Error(`API 拒絕請求 (${resp.status}): ${errData.error?.message || "未知錯誤"}`);
+    }
+
+    return await resp.json();
+  } catch (e) {
+    throw e; 
   }
-  throw new Error("重試次數已用盡");
 }
 const txt = d => d.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "";
 const pJ = t => { let r = t.replace(/```json\s*/g, "").replace(/```/g, "").trim(); const a = r.indexOf("{"), b = r.indexOf("["); let s, e; if (b >= 0 && (b < a || a < 0)) { s = b; e = r.lastIndexOf("]"); } else { s = a; e = r.lastIndexOf("}"); } if (s < 0 || e < 0) throw new Error("Parse fail"); return JSON.parse(r.substring(s, e + 1)); };
