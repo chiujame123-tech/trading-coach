@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 
 // ═══════════════════════════════════════════════════════════════
-// TRADING COACH v10.2 (Real Yahoo Finance Fetcher + Claude 3.5)
+// TRADING COACH v10.3 (Live Yahoo Fetcher + Mjdjourney Proxy API)
 // Instant Watchlist + Optional Live Scan + Structured Journal
 // ═══════════════════════════════════════════════════════════════
 
@@ -13,45 +13,54 @@ let _apiKey = "";
 const setApiKey = (k) => { _apiKey = k; };
 const getApiKey = () => _apiKey;
 
-// ── 1. 真實的 Claude API 呼叫 (移除假 Tool，使用真實最新模型) ──
+// ── 1. 代理平台專用 API 呼叫 (OpenAI 兼容格式 - Mjdjourney) ──
 async function callClaude({ system, messages, maxTokens = 1500 }) {
   const key = getApiKey();
-  if (!key) throw new Error("請先輸入 Anthropic API Key");
+  if (!key) throw new Error("請先輸入 API Key");
+  
+  // 將 Claude 專用格式轉換成中轉站需要嘅 OpenAI 格式
+  const formattedMessages = [
+    { role: "system", content: system },
+    ...messages
+  ];
   
   const body = { 
+    // ⚠️ 如果一陣彈 Error 話 "Model not found"，請將呢度改為 "claude-opus-4-5claude-opus-4-5" 或 "gpt-4o"
     model: "claude-3-5-sonnet-20241022", 
     max_tokens: maxTokens, 
-    system, 
-    messages 
+    messages: formattedMessages 
   };
   
-  for (let i = 0; i < 5; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, Math.min(3000 * Math.pow(2, i) + Math.random() * 2000, 40000)));
-    try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": key,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify(body),
-      });
-      if (resp.status === 429) { await new Promise(r => setTimeout(r, 8000 * Math.pow(2, i))); continue; }
-      if (resp.status === 401) throw new Error("API Key 無效，請檢查是否複製多了空格");
-      if (resp.status >= 500) continue;
-      if (!resp.ok) {
-        const err = await resp.json();
-        throw new Error(err.error?.message || `API 錯誤 ${resp.status}`);
-      }
-      return await resp.json();
-    } catch (e) { 
-      if (i === 4) throw e; 
-      if (e.message?.includes("API Key") || e.message?.includes("請先")) throw e; 
+  try {
+    // 👇 精準對位：你提供嘅中轉站地址
+    const BASE_URL = "https://api.mjdjourney.cn/v1/chat/completions"; 
+    
+    const resp = await fetch(BASE_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${key}` 
+      },
+      body: JSON.stringify(body),
+    });
+    
+    if (resp.status === 401) throw new Error("API Key 無效或戶口餘額不足！");
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.error?.message || `API 伺服器錯誤 ${resp.status}`);
     }
+    
+    const data = await resp.json();
+    
+    // 偽裝回傳格式，完美對接你原本嘅 React UI
+    return {
+      content: [
+        { type: "text", text: data.choices[0].message.content }
+      ]
+    };
+  } catch (e) { 
+    throw new Error(`中轉站連線失敗: ${e.message}`);
   }
-  throw new Error("重試次數已用盡");
 }
 
 // ── 2. 真・聯網取數器 (直接爬取 Yahoo Finance 避開 CORS) ──
@@ -387,7 +396,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
           <div style={{fontSize:16,fontWeight:700,color:"#22c55e",fontFamily:FM,display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:18}}>⚖️</span>量化教練
           </div>
-          <div style={{fontSize:9,color:"#334155",marginTop:3,fontFamily:FM,letterSpacing:1}}>TRADING COACH v10.2</div>
+          <div style={{fontSize:9,color:"#334155",marginTop:3,fontFamily:FM,letterSpacing:1}}>TRADING COACH v10.3</div>
         </div>
         <div style={{padding:"0 8px",display:"flex",flexDirection:"column",gap:2}}>
           {/* API Key */}
@@ -396,7 +405,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               {apiKey?"🟢 API 已連接":"🔴 需要 API Key"}
             </label>
             <input type="password" value={apiKey} onChange={e=>{setApiKeyState(e.target.value);setApiKey(e.target.value);}}
-              placeholder="sk-ant-..." style={{width:"100%",background:"#0f172a",border:`1px solid ${apiKey?"#1e3a2a":"#3a1e1e"}`,borderRadius:6,color:"#e2e8f0",padding:"7px 10px",fontSize:10,fontFamily:FM,outline:"none"}}/>
+              placeholder="sk-..." style={{width:"100%",background:"#0f172a",border:`1px solid ${apiKey?"#1e3a2a":"#3a1e1e"}`,borderRadius:6,color:"#e2e8f0",padding:"7px 10px",fontSize:10,fontFamily:FM,outline:"none"}}/>
             <div style={{fontSize:8,color:"#334155",marginTop:3,lineHeight:1.5}}>僅存於記憶體，不會儲存</div>
           </div>
           {NAV.map(n=>(
@@ -581,6 +590,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               </div>)}
               {err&&(<div style={{padding:16,background:"rgba(239,68,68,.04)",border:"1px solid #2a1a1a",borderRadius:10}}>
                 <div style={{color:"#ef4444",fontSize:12,fontWeight:600}}>❌ {err}</div>
+                <div style={{color:"#64748b",fontSize:11,marginTop:6}}>如果係 Model not found，請去 Code 修改 Model 名字。</div>
                 <button onClick={runSpread} style={{marginTop:8,padding:"6px 14px",borderRadius:6,border:"1px solid #3a1a1a",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11}}>🔄 重試</button>
               </div>)}
             </div>
@@ -688,7 +698,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
 
         {/* Footer */}
         <div style={{padding:"5px 16px",borderTop:"1px solid #1e293b",background:"#0d1320",display:"flex",justifyContent:"space-between",fontSize:9,color:"#334155",fontFamily:FM,flexShrink:0}}>
-          <span>⚡ v10.2 · Live Yahoo Fetch · API Fixed</span>
+          <span>⚡ v10.3 · Mjdjourney API · Yahoo Fetch</span>
           <span>{new Date().toLocaleDateString("zh-HK")}</span>
         </div>
       </main>
