@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 
 // ═══════════════════════════════════════════════════════════════
-// TRADING COACH v10.3 (Live Yahoo Fetcher + Mjdjourney Proxy API)
+// TRADING COACH v10.4 (Route B: Mjdjourney Custom Model Name)
 // Instant Watchlist + Optional Live Scan + Structured Journal
 // ═══════════════════════════════════════════════════════════════
 
@@ -25,7 +25,7 @@ async function callClaude({ system, messages, maxTokens = 1500 }) {
   ];
   
   const body = { 
-    // ⚠️ 如果一陣彈 Error 話 "Model not found"，請將呢度改為 "model: "claude-opus-4-5claude-opus-4-5"," 或 "gpt-4o"
+    // ⚠️ 路線 B 啟動：已經為你鎖定截圖中專屬授權嘅模型名稱
     model: "claude-opus-4-5claude-opus-4-5", 
     max_tokens: maxTokens, 
     messages: formattedMessages 
@@ -396,7 +396,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
           <div style={{fontSize:16,fontWeight:700,color:"#22c55e",fontFamily:FM,display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:18}}>⚖️</span>量化教練
           </div>
-          <div style={{fontSize:9,color:"#334155",marginTop:3,fontFamily:FM,letterSpacing:1}}>TRADING COACH v10.3</div>
+          <div style={{fontSize:9,color:"#334155",marginTop:3,fontFamily:FM,letterSpacing:1}}>TRADING COACH v10.4</div>
         </div>
         <div style={{padding:"0 8px",display:"flex",flexDirection:"column",gap:2}}>
           {/* API Key */}
@@ -590,7 +590,6 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               </div>)}
               {err&&(<div style={{padding:16,background:"rgba(239,68,68,.04)",border:"1px solid #2a1a1a",borderRadius:10}}>
                 <div style={{color:"#ef4444",fontSize:12,fontWeight:600}}>❌ {err}</div>
-                <div style={{color:"#64748b",fontSize:11,marginTop:6}}>如果係 Model not found，請去 Code 修改 Model 名字。</div>
                 <button onClick={runSpread} style={{marginTop:8,padding:"6px 14px",borderRadius:6,border:"1px solid #3a1a1a",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11}}>🔄 重試</button>
               </div>)}
             </div>
@@ -698,7 +697,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
 
         {/* Footer */}
         <div style={{padding:"5px 16px",borderTop:"1px solid #1e293b",background:"#0d1320",display:"flex",justifyContent:"space-between",fontSize:9,color:"#334155",fontFamily:FM,flexShrink:0}}>
-          <span>⚡ v10.3 · Mjdjourney API · Yahoo Fetch</span>
+          <span>⚡ v10.4 · Route B Custom Model Name</span>
           <span>{new Date().toLocaleDateString("zh-HK")}</span>
         </div>
       </main>
