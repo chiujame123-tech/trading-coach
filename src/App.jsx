@@ -25,8 +25,8 @@ async function callClaude({ system, messages, maxTokens = 1500 }) {
   ];
   
   const body = { 
-    // ⚠️ 如果一陣彈 Error 話 "Model not found"，請將呢度改為 "claude-opus-4-5claude-opus-4-5" 或 "gpt-4o"
-    model: "claude-3-5-sonnet-20241022", 
+    // ⚠️ 如果一陣彈 Error 話 "Model not found"，請將呢度改為 "model: "claude-opus-4-5claude-opus-4-5"," 或 "gpt-4o"
+    model: "claude-opus-4-5claude-opus-4-5", 
     max_tokens: maxTokens, 
     messages: formattedMessages 
   };
