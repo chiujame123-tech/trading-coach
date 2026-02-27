@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 
 // ═══════════════════════════════════════════════════════════════
-// TRADING COACH v10.1
+// TRADING COACH v10.2 (Real Yahoo Finance Fetcher + Claude 3.5)
 // Instant Watchlist + Optional Live Scan + Structured Journal
 // ═══════════════════════════════════════════════════════════════
 
@@ -13,41 +13,50 @@ let _apiKey = "";
 const setApiKey = (k) => { _apiKey = k; };
 const getApiKey = () => _apiKey;
 
-// ── 1. 修復版 callClaude (移除假模型，換上真實最新版) ──
+// ── 1. 真實的 Claude API 呼叫 (移除假 Tool，使用真實最新模型) ──
 async function callClaude({ system, messages, maxTokens = 1500 }) {
   const key = getApiKey();
   if (!key) throw new Error("請先輸入 Anthropic API Key");
-
-  // 換上現實世界真正存在、能力最強嘅模型
-  const body = { model: "claude-3-5-sonnet-20241022", max_tokens: maxTokens, system, messages };
   
-  try {
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify(body),
-    });
-    
-    if (resp.status === 401) throw new Error("API Key 無效，請確保冇 Copy 多咗空格！");
-    if (!resp.ok) {
+  const body = { 
+    model: "claude-3-5-sonnet-20241022", 
+    max_tokens: maxTokens, 
+    system, 
+    messages 
+  };
+  
+  for (let i = 0; i < 5; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, Math.min(3000 * Math.pow(2, i) + Math.random() * 2000, 40000)));
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify(body),
+      });
+      if (resp.status === 429) { await new Promise(r => setTimeout(r, 8000 * Math.pow(2, i))); continue; }
+      if (resp.status === 401) throw new Error("API Key 無效，請檢查是否複製多了空格");
+      if (resp.status >= 500) continue;
+      if (!resp.ok) {
         const err = await resp.json();
-        throw new Error(err.error?.message || `API 拒絕請求 (${resp.status})`);
+        throw new Error(err.error?.message || `API 錯誤 ${resp.status}`);
+      }
+      return await resp.json();
+    } catch (e) { 
+      if (i === 4) throw e; 
+      if (e.message?.includes("API Key") || e.message?.includes("請先")) throw e; 
     }
-    return await resp.json();
-  } catch (e) {
-    throw e;
   }
+  throw new Error("重試次數已用盡");
 }
 
-// ── 2. 新增：真・聯網取數器 (直接爬取 Yahoo Finance) ──
+// ── 2. 真・聯網取數器 (直接爬取 Yahoo Finance 避開 CORS) ──
 async function fetchLiveStockData(ticker) {
   try {
-    // 透過免費 proxy 避開瀏覽器限制，直取 Yahoo 真實數據
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`;
     const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
     const res = await fetch(proxyUrl);
@@ -56,17 +65,17 @@ async function fetchLiveStockData(ticker) {
     const price = yf.chart.result[0].meta.regularMarketPrice;
     return `【系統即時聯網數據】${ticker} 此刻最新現價為 $${price}`;
   } catch (e) {
-    return `【聯網提示】暫時無法獲取 ${ticker} 即時報價，請基於你的內部歷史知識進行分析。`;
+    return `【聯網提示】暫時無法獲取即時報價，請基於你的內部歷史知識進行分析。`;
   }
 }
-}
+
 const txt = d => d.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "";
 const pJ = t => { let r = t.replace(/```json\s*/g, "").replace(/```/g, "").trim(); const a = r.indexOf("{"), b = r.indexOf("["); let s, e; if (b >= 0 && (b < a || a < 0)) { s = b; e = r.lastIndexOf("]"); } else { s = a; e = r.lastIndexOf("}"); } if (s < 0 || e < 0) throw new Error("Parse fail"); return JSON.parse(r.substring(s, e + 1)); };
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Prompts ───────────────────────────────────────────────────
 
-const P_DATA = `You are a stock data agent. Use web_search to find current data for the ticker.
+const P_DATA = `You are a stock data agent. Use the provided live data and your internal knowledge to generate current data for the ticker.
 Return ONLY JSON: {"price":<num>,"rsi14":<num>,"sma200":<num>,"sma50":<num>,"atr14":<num>,"hv30":<num>,"hv60":<num>,"pct52wHigh":<neg num>,"week52High":<num>,"week52Low":<num>,"volRatio20":<num>,"beta":<num|null>,"marketCap":"<str>","forwardPE":<num|null>,"earningsDate":"<str|null>","earningsDays":<int|null>,"sector":"<str>","analystRating":"<str|null>","priceTarget":<num|null>,"shortFloat":<num|null>,"companyName":"<str>","recentNews":"<str|null>"}`;
 
 const P_VERDICT = `你是首席量化交易教練，精通 Bull Put Spread。收到數據後直接輸出決策報告。
@@ -97,10 +106,9 @@ Credit ~$X.XX | MaxLoss $XXX | RoR XX% | 合約數 X張
 ### I. 核心論點（3 bullets 為何做/不做）
 ### J. 風險警告（2個具體風險+最壞情況）`;
 
-// Ultra-fast scanner — ONE search, immediate answer
-const P_SCAN = `Search "top stock losers today" once. Return ONLY a JSON array of the biggest large-cap losers you find:
+const P_SCAN = `Based on your recent market knowledge, return ONLY a JSON array of 5-8 biggest large-cap losers:
 [{"ticker":"XX","name":"Name","dropPct":<num>,"reason":"why"}]
-5-8 stocks. ONLY JSON, no explanation. Do NOT search more than once.`;
+ONLY JSON, no explanation.`;
 
 const P_JOURNAL = `你是嚴格的首席交易教練。
 
@@ -236,10 +244,9 @@ export default function App() {
   const [err,setErr]=useState(null); const [stock,setStock]=useState(null);
   const [verdict,setVerdict]=useState(null); const [logs,setLogs]=useState([]);
 
-  // Scanner — instant watchlist + optional live scan
+  // Scanner
   const [scanning,setScanning]=useState(false); const [scanRes,setScanRes]=useState(null); const [scanErr,setScanErr]=useState(null);
 
-  // Built-in watchlist — always visible instantly
   const WATCHLIST = [
     {ticker:"TSLA",name:"Tesla",note:"高 Beta，常見恐慌回調"},
     {ticker:"NVDA",name:"NVIDIA",note:"AI 龍頭，波動大"},
@@ -253,7 +260,7 @@ export default function App() {
     {ticker:"NFLX",name:"Netflix",note:"串流龍頭，業績波動"},
   ];
 
-  // Journal — structured fields
+  // Journal
   const [jTicker,setJTicker]=useState(""); const [jAction,setJAction]=useState("");
   const [jStrategy,setJStrategy]=useState(""); const [jDirection,setJDirection]=useState("");
   const [jEntry,setJEntry]=useState(""); const [jSize,setJSize]=useState("");
@@ -273,8 +280,18 @@ export default function App() {
     const tk=ticker.trim().toUpperCase();
     setRunning(true);setErr(null);setStock(null);setVerdict(null);setLogs([]);
     try {
-      setPhase("fetch"); log(`📡 搜尋 ${tk}...`);
-      const r1=await callClaude({system:P_DATA,messages:[{role:"user",content:`Get data for: ${tk}`}],tools:[{type:"web_search_20250305",name:"web_search"}],maxTokens:1500});
+      setPhase("fetch"); log(`📡 啟動聯網引擎搜尋 ${tk}...`);
+      
+      // 呼叫真實 Yahoo Finance 爬蟲
+      const liveInfo = await fetchLiveStockData(tk);
+      log(`🌐 ${liveInfo}`);
+
+      const r1 = await callClaude({
+        system: P_DATA,
+        messages: [{ role: "user", content: `Get data for: ${tk}. ${liveInfo}. Return ONLY JSON.` }],
+        maxTokens: 1500
+      });
+      
       const d=enrich(pJ(txt(r1)),tk); setStock(d); log(`✅ ${d.name} $${d.price.toFixed(2)}`);
       log(`⏳ 冷卻 5s...`); await wait(5000);
       setPhase("verdict"); log(`⚖️ 生成報告...`);
@@ -295,10 +312,13 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
 
   const runScan = async () => {
     setScanning(true);setScanErr(null);setScanRes(null);
-    // 45-second hard timeout
     const timeout = new Promise((_,rej) => setTimeout(()=>rej(new Error("timeout")),45000));
     const doScan = async () => {
-      const r=await callClaude({system:P_SCAN,messages:[{role:"user",content:`losers ${new Date().toLocaleDateString("en-US")}`}],tools:[{type:"web_search_20250305",name:"web_search"}],maxTokens:600});
+      const r=await callClaude({
+        system: P_SCAN,
+        messages: [{role:"user",content:`losers ${new Date().toLocaleDateString("en-US")}. Return ONLY JSON.`}],
+        maxTokens:600
+      });
       const raw=txt(r); let c=raw.replace(/```json\s*/g,"").replace(/```/g,"").trim();
       const s=c.indexOf("["),e=c.lastIndexOf("]");
       if(s<0||e<0) throw new Error("parse");
@@ -320,7 +340,6 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
     setJLoad(true);
     const dt=new Date().toLocaleDateString("zh-HK",{year:"numeric",month:"2-digit",day:"2-digit"});
 
-    // Build structured message from all fields
     let msg = `【交易日誌】${dt}\n`;
     msg += `標的：${jTicker||"未填"}\n`;
     msg += `操作：${jAction||"未填"} | 方向：${jDirection||"未填"}\n`;
@@ -345,7 +364,6 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
       setTimeout(()=>bRef.current?.scrollIntoView({behavior:"smooth"}),100);
     } catch{setJMsgs([...msgs,{role:"assistant",content:"⚠️ 連接錯誤"}]);}
     setJLoad(false);
-    // Reset form
     setJTicker("");setJAction("");setJStrategy("");setJDirection("");setJEntry("");
     setJSize("");setJDTE("");setJDelta("");setJCredit("");setJMaxLoss("");
     setJEmotion("");setJConfidence("");setJPlan("");setJNotes("");
@@ -369,7 +387,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
           <div style={{fontSize:16,fontWeight:700,color:"#22c55e",fontFamily:FM,display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:18}}>⚖️</span>量化教練
           </div>
-          <div style={{fontSize:9,color:"#334155",marginTop:3,fontFamily:FM,letterSpacing:1}}>TRADING COACH v10.1</div>
+          <div style={{fontSize:9,color:"#334155",marginTop:3,fontFamily:FM,letterSpacing:1}}>TRADING COACH v10.2</div>
         </div>
         <div style={{padding:"0 8px",display:"flex",flexDirection:"column",gap:2}}>
           {/* API Key */}
@@ -413,10 +431,9 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               }}>{scanning?"⏳ 掃描中...":"🔍 掃描今日跌幅"}</button>
             </div>
 
-            {/* Live scan results — shown above watchlist when available */}
             {scanning&&(<div style={{marginBottom:16,padding:14,background:"rgba(234,179,8,.04)",border:"1px solid #3a3a1e",borderRadius:10,display:"flex",alignItems:"center",gap:10}}>
               <div style={{width:14,height:14,border:"2px solid #1e293b",borderTop:"2px solid #eab308",borderRadius:"50%",animation:"spin .8s linear infinite",flexShrink:0}}/>
-              <span style={{color:"#eab308",fontSize:12}}>AI 正在搜尋今日市場跌幅（最多45秒）...</span>
+              <span style={{color:"#eab308",fontSize:12}}>AI 正在掃描市場機會（最多45秒）...</span>
             </div>)}
 
             {scanErr&&(<div style={{marginBottom:16,padding:12,background:"rgba(239,68,68,.04)",border:"1px solid #2a1a1a",borderRadius:10,color:"#94a3b8",fontSize:12}}>
@@ -424,7 +441,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
             </div>)}
 
             {scanRes&&(<>
-              <div style={{fontSize:11,color:"#22c55e",fontWeight:600,marginBottom:8,letterSpacing:1}}>📡 AI 即時掃描結果 · {new Date().toLocaleDateString("zh-HK")}</div>
+              <div style={{fontSize:11,color:"#22c55e",fontWeight:600,marginBottom:8,letterSpacing:1}}>📡 AI 分析結果 · {new Date().toLocaleDateString("zh-HK")}</div>
               <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:24}}>
                 {scanRes.map((s,i)=>{
                   const dc=(s.dropPct||0)<-8?"#ef4444":(s.dropPct||0)<-4?"#eab308":"#f97316";
@@ -441,7 +458,6 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               </div>
             </>)}
 
-            {/* Always-visible watchlist */}
             <div style={{fontSize:11,color:"#475569",fontWeight:600,marginBottom:8,letterSpacing:1,display:"flex",alignItems:"center",gap:6}}>
               <span>📋 常用標的快速列表</span>
               <span style={{fontSize:9,color:"#334155",fontWeight:400}}>— 點擊直接分析</span>
@@ -461,7 +477,6 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               ))}
             </div>
 
-            {/* Custom ticker */}
             <div style={{marginTop:16,padding:14,background:"#0d1320",border:"1px solid #1e293b",borderRadius:10,display:"flex",gap:8,alignItems:"center"}}>
               <span style={{fontSize:12,color:"#64748b",flexShrink:0}}>自訂：</span>
               <input value={ticker} onChange={e=>setTicker(e.target.value.toUpperCase())} placeholder="輸入任何代號..."
@@ -551,10 +566,10 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               {!verdict&&!running&&!err&&(
                 <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",opacity:.3}}>
                   <div style={{fontSize:48}}>⚖️</div><div style={{color:"#475569",fontSize:13,marginTop:12}}>Spread 決策引擎</div>
-                  <div style={{color:"#334155",fontSize:11,lineHeight:2.2,textAlign:"center",marginTop:8}}>輸入代號 → 🚀 分析<br/>Agent 1: 即時數據 | Agent 2: 決策報告<br/>含成功率、評分、做/不做論點</div>
+                  <div style={{color:"#334155",fontSize:11,lineHeight:2.2,textAlign:"center",marginTop:8}}>輸入代號 → 🚀 分析<br/>Agent 1: 聯網即時數據 | Agent 2: 決策報告<br/>含成功率、評分、做/不做論點</div>
                 </div>
               )}
-              {running&&!verdict&&<Spin t={phase==="fetch"?"搜尋數據中...":"生成報告中（~30秒）..."}/>}
+              {running&&!verdict&&<Spin t={phase==="fetch"?"聯網獲取數據中...":"生成報告中（~30秒）..."}/>}
               {verdict&&(<div ref={vRef}>
                 <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18,paddingBottom:14,borderBottom:"1px solid #1e293b"}}>
                   <div style={{fontSize:22}}>⚖️</div>
@@ -566,7 +581,6 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               </div>)}
               {err&&(<div style={{padding:16,background:"rgba(239,68,68,.04)",border:"1px solid #2a1a1a",borderRadius:10}}>
                 <div style={{color:"#ef4444",fontSize:12,fontWeight:600}}>❌ {err}</div>
-                <div style={{color:"#64748b",fontSize:11,marginTop:6}}>已重試 5 次。建議等 30 秒。</div>
                 <button onClick={runSpread} style={{marginTop:8,padding:"6px 14px",borderRadius:6,border:"1px solid #3a1a1a",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11}}>🔄 重試</button>
               </div>)}
             </div>
@@ -581,35 +595,24 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               <h2 style={{fontSize:16,fontWeight:600,margin:0}}>📓 交易日誌</h2>
               <p style={{fontSize:11,color:"#64748b",margin:0}}>結構化紀錄，教練逐條對照公約審查</p>
 
-              {/* Section: Trade Info */}
               <div style={{padding:"10px 12px",background:"#0d1320",borderRadius:8,border:"1px solid #1e293b",display:"flex",flexDirection:"column",gap:8}}>
                 <div style={{fontSize:10,color:"#22c55e",fontWeight:600,letterSpacing:1}}>📋 交易資訊</div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
                   <Field label="標的"><input value={jTicker} onChange={e=>setJTicker(e.target.value.toUpperCase())} placeholder="NVDA" style={IS}/></Field>
                   <Field label="操作">
-                    <Select value={jAction} onChange={setJAction} placeholder="選擇..." options={[
-                      {v:"開倉",l:"開倉 Open"},{v:"平倉",l:"平倉 Close"},{v:"加倉",l:"加倉 Add"},
-                      {v:"減倉",l:"減倉 Reduce"},{v:"止損",l:"止損 Stop Loss"},{v:"觀望",l:"觀望 Watch"},{v:"月供買入",l:"月供買入 DCA"}
-                    ]}/>
+                    <Select value={jAction} onChange={setJAction} placeholder="選擇..." options={[{v:"開倉",l:"開倉 Open"},{v:"平倉",l:"平倉 Close"},{v:"加倉",l:"加倉 Add"},{v:"減倉",l:"減倉 Reduce"},{v:"止損",l:"止損 Stop Loss"},{v:"觀望",l:"觀望 Watch"},{v:"月供買入",l:"月供買入 DCA"}]}/>
                   </Field>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
                   <Field label="策略">
-                    <Select value={jStrategy} onChange={setJStrategy} placeholder="選擇..." options={[
-                      {v:"Bull Put Spread",l:"Bull Put Spread"},{v:"買入股票",l:"買入股票"},
-                      {v:"VOO 月供",l:"VOO 月供"},{v:"Covered Call",l:"Covered Call"},
-                      {v:"Cash Secured Put",l:"Cash Secured Put"},{v:"Iron Condor",l:"Iron Condor"},{v:"其他",l:"其他"}
-                    ]}/>
+                    <Select value={jStrategy} onChange={setJStrategy} placeholder="選擇..." options={[{v:"Bull Put Spread",l:"Bull Put Spread"},{v:"買入股票",l:"買入股票"},{v:"VOO 月供",l:"VOO 月供"},{v:"Covered Call",l:"Covered Call"},{v:"Cash Secured Put",l:"Cash Secured Put"},{v:"Iron Condor",l:"Iron Condor"},{v:"其他",l:"其他"}]}/>
                   </Field>
                   <Field label="方向">
-                    <Select value={jDirection} onChange={setJDirection} placeholder="選擇..." options={[
-                      {v:"看漲",l:"看漲 Bullish"},{v:"看跌",l:"看跌 Bearish"},{v:"中性",l:"中性 Neutral"}
-                    ]}/>
+                    <Select value={jDirection} onChange={setJDirection} placeholder="選擇..." options={[{v:"看漲",l:"看漲 Bullish"},{v:"看跌",l:"看跌 Bearish"},{v:"中性",l:"中性 Neutral"}]}/>
                   </Field>
                 </div>
               </div>
 
-              {/* Section: Parameters (only show for options) */}
               {(jStrategy.includes("Put")||jStrategy.includes("Call")||jStrategy.includes("Condor"))&&(
                 <div style={{padding:"10px 12px",background:"#0d1320",borderRadius:8,border:"1px solid #1e293b",display:"flex",flexDirection:"column",gap:8}}>
                   <div style={{fontSize:10,color:"#3b82f6",fontWeight:600,letterSpacing:1}}>📐 期權參數</div>
@@ -626,51 +629,23 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
                 </div>
               )}
 
-              {/* For stock trades */}
-              {(jStrategy==="買入股票"||jStrategy==="VOO 月供")&&(
-                <div style={{padding:"10px 12px",background:"#0d1320",borderRadius:8,border:"1px solid #1e293b",display:"flex",flexDirection:"column",gap:8}}>
-                  <div style={{fontSize:10,color:"#3b82f6",fontWeight:600,letterSpacing:1}}>📐 交易參數</div>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-                    <Field label="進場價"><input value={jEntry} onChange={e=>setJEntry(e.target.value)} placeholder="$540" style={IS}/></Field>
-                    <Field label="股數/金額"><input value={jSize} onChange={e=>setJSize(e.target.value)} placeholder="10股 / $5000" style={IS}/></Field>
-                  </div>
-                </div>
-              )}
-
-              {/* Section: Psychology */}
               <div style={{padding:"10px 12px",background:"#0d1320",borderRadius:8,border:"1px solid #1e293b",display:"flex",flexDirection:"column",gap:8}}>
                 <div style={{fontSize:10,color:"#eab308",fontWeight:600,letterSpacing:1}}>🧠 心態紀錄</div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
                   <Field label="情緒狀態">
-                    <Select value={jEmotion} onChange={setJEmotion} placeholder="選擇..." options={[
-                      {v:"冷靜理性",l:"😐 冷靜理性"},{v:"略為興奮",l:"😃 略為興奮"},
-                      {v:"焦慮不安",l:"😰 焦慮不安"},{v:"FOMO 恐懼錯過",l:"😱 FOMO"},
-                      {v:"恐慌想逃",l:"🏃 恐慌想逃"},{v:"貪婪想加碼",l:"🤑 貪婪想加碼"},
-                      {v:"報復性交易",l:"😤 報復性交易"},{v:"麻木無感",l:"😶 麻木無感"}
-                    ]}/>
+                    <Select value={jEmotion} onChange={setJEmotion} placeholder="選擇..." options={[{v:"冷靜理性",l:"😐 冷靜理性"},{v:"略為興奮",l:"😃 略為興奮"},{v:"焦慮不安",l:"😰 焦慮不安"},{v:"FOMO 恐懼錯過",l:"😱 FOMO"},{v:"恐慌想逃",l:"🏃 恐慌想逃"},{v:"貪婪想加碼",l:"🤑 貪婪想加碼"},{v:"報復性交易",l:"😤 報復性交易"},{v:"麻木無感",l:"😶 麻木無感"}]}/>
                   </Field>
                   <Field label="信心程度">
-                    <Select value={jConfidence} onChange={setJConfidence} placeholder="選擇..." options={[
-                      {v:"非常有信心(90%+)",l:"💪 90%+"},{v:"有信心(70-90%)",l:"👍 70-90%"},
-                      {v:"一般(50-70%)",l:"🤔 50-70%"},{v:"缺乏信心(<50%)",l:"😟 <50%"},
-                      {v:"純粹賭博",l:"🎰 純粹賭博"}
-                    ]}/>
+                    <Select value={jConfidence} onChange={setJConfidence} placeholder="選擇..." options={[{v:"非常有信心(90%+)",l:"💪 90%+"},{v:"有信心(70-90%)",l:"👍 70-90%"},{v:"一般(50-70%)",l:"🤔 50-70%"},{v:"缺乏信心(<50%)",l:"😟 <50%"},{v:"純粹賭博",l:"🎰 純粹賭博"}]}/>
                   </Field>
                 </div>
                 <Field label="是否符合預設計劃？">
-                  <Select value={jPlan} onChange={setJPlan} placeholder="選擇..." options={[
-                    {v:"完全符合計劃",l:"✅ 完全符合"},{v:"大致符合但有偏差",l:"⚠️ 大致符合"},
-                    {v:"臨時起意",l:"❌ 臨時起意"},{v:"沒有計劃",l:"❌ 沒有計劃"}
-                  ]}/>
+                  <Select value={jPlan} onChange={setJPlan} placeholder="選擇..." options={[{v:"完全符合計劃",l:"✅ 完全符合"},{v:"大致符合但有偏差",l:"⚠️ 大致符合"},{v:"臨時起意",l:"❌ 臨時起意"},{v:"沒有計劃",l:"❌ 沒有計劃"}]}/>
                 </Field>
               </div>
 
-              {/* Free notes */}
               <Field label="補充說明（自由記錄）">
-                <textarea value={jNotes} onChange={e=>setJNotes(e.target.value)}
-                  placeholder="例：今天看到 NVDA 跌了 8%，很想追但忍住了。收盤後覺得做對了..."
-                  onKeyDown={e=>{if(e.key==="Enter"&&e.metaKey)submitJ();}}
-                  style={{...IS,minHeight:80,resize:"vertical",lineHeight:1.8}}/>
+                <textarea value={jNotes} onChange={e=>setJNotes(e.target.value)} placeholder="例：今天看到跌了 8%，很想追但忍住了..." onKeyDown={e=>{if(e.key==="Enter"&&e.metaKey)submitJ();}} style={{...IS,minHeight:80,resize:"vertical",lineHeight:1.8}}/>
               </Field>
 
               <button onClick={submitJ} disabled={jLoad||(!jTicker.trim()&&!jNotes.trim())} style={{
@@ -680,9 +655,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
                 color:jLoad||(!jTicker.trim()&&!jNotes.trim())?"#334155":"#22c55e",
               }}>{jLoad?"⏳ 審查中...":"⚖️ 提交紀律審查"}</button>
 
-              {jMsgs.length>0&&(
-                <button onClick={()=>setJMsgs([])} style={{padding:"5px 10px",borderRadius:6,border:"1px solid #1e293b",background:"transparent",color:"#475569",cursor:"pointer",fontSize:10}}>清除歷史</button>
-              )}
+              {jMsgs.length>0&&(<button onClick={()=>setJMsgs([])} style={{padding:"5px 10px",borderRadius:6,border:"1px solid #1e293b",background:"transparent",color:"#475569",cursor:"pointer",fontSize:10}}>清除歷史</button>)}
             </div>
 
             {/* Chat */}
@@ -698,22 +671,15 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
               ):(<>
                 {jMsgs.map((m,i)=>(
                   <div key={i} style={{marginBottom:16,display:"flex",flexDirection:"column",alignItems:m.role==="user"?"flex-end":"flex-start"}}>
-                    <div style={{fontSize:8,color:m.role==="user"?"#3b82f6":"#eab308",marginBottom:3,letterSpacing:2,fontFamily:FM}}>
-                      {m.role==="user"?"▸ YOU":"◂ COACH"}
-                    </div>
+                    <div style={{fontSize:8,color:m.role==="user"?"#3b82f6":"#eab308",marginBottom:3,letterSpacing:2,fontFamily:FM}}>{m.role==="user"?"▸ YOU":"◂ COACH"}</div>
                     <div style={{
-                      maxWidth:"90%",padding:"14px 18px",
-                      borderRadius:m.role==="user"?"14px 14px 4px 14px":"14px 14px 14px 4px",
-                      background:m.role==="user"?"rgba(59,130,246,.05)":"rgba(234,179,8,.04)",
-                      border:m.role==="user"?"1px solid #1e3050":"1px solid #30301e",
+                      maxWidth:"90%",padding:"14px 18px",borderRadius:m.role==="user"?"14px 14px 4px 14px":"14px 14px 14px 4px",
+                      background:m.role==="user"?"rgba(59,130,246,.05)":"rgba(234,179,8,.04)",border:m.role==="user"?"1px solid #1e3050":"1px solid #30301e",
                       color:m.role==="user"?"#93c5fd":"#d4d0a0",fontSize:12,lineHeight:2,fontFamily:FM,whiteSpace:"pre-wrap"
                     }}>{m.content}</div>
                   </div>
                 ))}
-                {jLoad&&(<div style={{display:"flex",alignItems:"center",gap:8,padding:12}}>
-                  <div style={{width:6,height:6,borderRadius:"50%",background:"#eab308",animation:"pulse 1s infinite"}}/>
-                  <span style={{color:"#64748b",fontSize:11}}>教練正在審查...</span>
-                </div>)}
+                {jLoad&&(<div style={{display:"flex",alignItems:"center",gap:8,padding:12}}><div style={{width:6,height:6,borderRadius:"50%",background:"#eab308",animation:"pulse 1s infinite"}}/><span style={{color:"#64748b",fontSize:11}}>教練正在審查...</span></div>)}
                 <div ref={bRef}/>
               </>)}
             </div>
@@ -722,7 +688,7 @@ IV:${iv} ShortPut:$${d.shortPut} σ:$${d.std30.toFixed(2)} ${d.news||""}${notes?
 
         {/* Footer */}
         <div style={{padding:"5px 16px",borderTop:"1px solid #1e293b",background:"#0d1320",display:"flex",justifyContent:"space-between",fontSize:9,color:"#334155",fontFamily:FM,flexShrink:0}}>
-          <span>⚡ v10.1 · 2-Agent · Retry-Safe</span>
+          <span>⚡ v10.2 · Live Yahoo Fetch · API Fixed</span>
           <span>{new Date().toLocaleDateString("zh-HK")}</span>
         </div>
       </main>
