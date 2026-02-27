@@ -13,19 +13,14 @@ let _apiKey = "";
 const setApiKey = (k) => { _apiKey = k; };
 const getApiKey = () => _apiKey;
 
+// ── 1. 修復版 callClaude (移除假模型，換上真實最新版) ──
 async function callClaude({ system, messages, maxTokens = 1500 }) {
-  // ⚠️ 已經幫你移除咗 AI 幻想出嚟嘅 tools 參數
   const key = getApiKey();
   if (!key) throw new Error("請先輸入 Anthropic API Key");
 
-  // 1. 修正為真實存在嘅最新模型名稱
-  const body = { 
-    model: "claude-3-5-sonnet-latest", 
-    max_tokens: maxTokens, 
-    system, 
-    messages 
-  };
-
+  // 換上現實世界真正存在、能力最強嘅模型
+  const body = { model: "claude-3-5-sonnet-20241022", max_tokens: maxTokens, system, messages };
+  
   try {
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -37,19 +32,33 @@ async function callClaude({ system, messages, maxTokens = 1500 }) {
       },
       body: JSON.stringify(body),
     });
-
-    if (resp.status === 401) throw new Error("API Key 無效，請確保冇 copy 多咗空格！");
     
-    // 2. 如果有錯，即刻彈出，唔好再等 80 秒！
+    if (resp.status === 401) throw new Error("API Key 無效，請確保冇 Copy 多咗空格！");
     if (!resp.ok) {
-      const errData = await resp.json();
-      throw new Error(`API 拒絕請求 (${resp.status}): ${errData.error?.message || "未知錯誤"}`);
+        const err = await resp.json();
+        throw new Error(err.error?.message || `API 拒絕請求 (${resp.status})`);
     }
-
     return await resp.json();
   } catch (e) {
-    throw e; 
+    throw e;
   }
+}
+
+// ── 2. 新增：真・聯網取數器 (直接爬取 Yahoo Finance) ──
+async function fetchLiveStockData(ticker) {
+  try {
+    // 透過免費 proxy 避開瀏覽器限制，直取 Yahoo 真實數據
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`;
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    const res = await fetch(proxyUrl);
+    const data = await res.json();
+    const yf = JSON.parse(data.contents);
+    const price = yf.chart.result[0].meta.regularMarketPrice;
+    return `【系統即時聯網數據】${ticker} 此刻最新現價為 $${price}`;
+  } catch (e) {
+    return `【聯網提示】暫時無法獲取 ${ticker} 即時報價，請基於你的內部歷史知識進行分析。`;
+  }
+}
 }
 const txt = d => d.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "";
 const pJ = t => { let r = t.replace(/```json\s*/g, "").replace(/```/g, "").trim(); const a = r.indexOf("{"), b = r.indexOf("["); let s, e; if (b >= 0 && (b < a || a < 0)) { s = b; e = r.lastIndexOf("]"); } else { s = a; e = r.lastIndexOf("}"); } if (s < 0 || e < 0) throw new Error("Parse fail"); return JSON.parse(r.substring(s, e + 1)); };
